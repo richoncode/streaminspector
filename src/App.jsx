@@ -17,6 +17,9 @@ function App() {
     const [showSummary, setShowSummary] = useState(false);
     const [summary, setSummary] = useState(null);
     const [loadingSummary, setLoadingSummary] = useState(false);
+    const [registrationData, setRegistrationData] = useState(null);
+    const [showRawReg, setShowRawReg] = useState(false);
+    const [loadingReg, setLoadingReg] = useState(false);
     const videoRef = useRef(null);
     const hlsRef = useRef(null);
 
@@ -86,8 +89,13 @@ function App() {
         setRawM3u8('');
         setShowSummary(false);
         setSummary(null);
+        setRegistrationData(null);
+        setShowRawReg(false);
         if (clip.strurl) {
             fetchM3u8Levels(clip.strurl);
+        }
+        if (clip.regData?.leftReg && clip.regData?.rightReg) {
+            fetchRegistrationData(clip.regData);
         }
     };
 
@@ -607,6 +615,91 @@ function App() {
                                     <p><span className="text-white/60">Media Type:</span> {selectedClip.clip.mediaType}</p>
                                 </div>
                             </div>
+
+                            {/* Registration Data */}
+                            {selectedClip.clip.regData?.leftReg && selectedClip.clip.regData?.rightReg && (
+                                <div>
+                                    <div className="flex items-center justify-between mb-2">
+                                        <h3 className="text-lg font-semibold">Registration</h3>
+                                        {registrationData && (
+                                            <button
+                                                onClick={() => setShowRawReg(!showRawReg)}
+                                                className="px-3 py-1 bg-blue-500 hover:bg-blue-600 rounded text-sm font-medium transition"
+                                            >
+                                                {showRawReg ? 'Hide' : 'RAW'}
+                                            </button>
+                                        )}
+                                    </div>
+
+                                    {loadingReg && (
+                                        <p className="text-white/60 text-sm">Loading registration data...</p>
+                                    )}
+
+                                    {registrationData && !showRawReg && (
+                                        <div className="bg-black/40 rounded-lg p-4 space-y-4">
+                                            {/* Summary Grid */}
+                                            <div className="grid grid-cols-2 gap-4 text-sm">
+                                                {/* Left View */}
+                                                <div>
+                                                    <h4 className="text-white/80 font-semibold mb-2">Left View</h4>
+                                                    {registrationData.left.summary.resolution && (
+                                                        <p className="text-xs"><span className="text-white/60">Resolution:</span> {registrationData.left.summary.resolution}</p>
+                                                    )}
+                                                    {registrationData.left.summary.focalLength && (
+                                                        <p className="text-xs"><span className="text-white/60">Focal Length:</span> {registrationData.left.summary.focalLength}</p>
+                                                    )}
+                                                    {registrationData.left.summary.principalPoint && (
+                                                        <p className="text-xs"><span className="text-white/60">Principal Point:</span> {registrationData.left.summary.principalPoint}</p>
+                                                    )}
+                                                </div>
+
+                                                {/* Right View */}
+                                                <div>
+                                                    <h4 className="text-white/80 font-semibold mb-2">Right View</h4>
+                                                    {registrationData.right.summary.resolution && (
+                                                        <p className="text-xs"><span className="text-white/60">Resolution:</span> {registrationData.right.summary.resolution}</p>
+                                                    )}
+                                                    {registrationData.right.summary.focalLength && (
+                                                        <p className="text-xs"><span className="text-white/60">Focal Length:</span> {registrationData.right.summary.focalLength}</p>
+                                                    )}
+                                                    {registrationData.right.summary.principalPoint && (
+                                                        <p className="text-xs"><span className="text-white/60">Principal Point:</span> {registrationData.right.summary.principalPoint}</p>
+                                                    )}
+                                                </div>
+                                            </div>
+
+                                            {/* Comparison */}
+                                            {registrationData.comparison.notes.length > 0 && (
+                                                <div className="border-t border-white/10 pt-3">
+                                                    <h5 className="text-xs font-semibold text-white/80 mb-2">Analysis</h5>
+                                                    <div className="space-y-1">
+                                                        {registrationData.comparison.notes.map((note, idx) => (
+                                                            <p key={idx} className="text-xs text-white/70">{note}</p>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+
+                                    {showRawReg && registrationData && (
+                                        <div className="space-y-3">
+                                            <div>
+                                                <h4 className="text-sm font-semibold text-white/80 mb-2">Left Registration (Raw JSON)</h4>
+                                                <pre className="bg-black/60 rounded-lg p-4 overflow-auto max-h-96 text-xs text-green-300 font-mono">
+                                                    {registrationData.left.raw}
+                                                </pre>
+                                            </div>
+                                            <div>
+                                                <h4 className="text-sm font-semibold text-white/80 mb-2">Right Registration (Raw JSON)</h4>
+                                                <pre className="bg-black/60 rounded-lg p-4 overflow-auto max-h-96 text-xs text-green-300 font-mono">
+                                                    {registrationData.right.raw}
+                                                </pre>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
 
                             {/* Raw JSON */}
                             <div>
