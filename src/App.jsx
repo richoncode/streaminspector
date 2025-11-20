@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { loadConfigs, saveConfigs } from './data/sampleConfigs';
+import Hls from 'hls.js';
 import './index.css';
 
 function App() {
@@ -8,6 +9,13 @@ function App() {
     const [selectedClip, setSelectedClip] = useState(null);
     const [loading, setLoading] = useState(false);
     const [newConfigUrl, setNewConfigUrl] = useState('');
+    const [m3u8Levels, setM3u8Levels] = useState([]);
+    const [loadingM3u8, setLoadingM3u8] = useState(false);
+    const [playing, setPlaying] = useState(false);
+    const [showRaw, setShowRaw] = useState(false);
+    const [rawM3u8, setRawM3u8] = useState('');
+    const videoRef = useRef(null);
+    const hlsRef = useRef(null);
 
     useEffect(() => {
         setConfigs(loadConfigs());
@@ -69,6 +77,89 @@ function App() {
 
     const viewClipDetail = (sport, clip) => {
         setSelectedClip({ sport, clip });
+        setM3u8Levels([]);
+        setPlaying(false);
+        setShowRaw(false);
+        setRawM3u8('');
+        if (clip.strurl) {
+            fetchM3u8Levels(clip.strurl);
+        }
+    };
+
+    const playVideo = () => {
+        setPlaying(true);
+
+        // Initialize HLS player after state update
+        setTimeout(() => {
+            if (videoRef.current && selectedClip?.clip.strurl) {
+                const video = videoRef.current;
+                const url = selectedClip.clip.strurl;
+
+                if (Hls.isSupported()) {
+                    const hls = new Hls();
+                    hls.loadSource(url);
+                    hls.attachMedia(video);
+                    hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                        video.play();
+                    });
+                    hlsRef.current = hls;
+                } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                    // Native HLS support (Safari)
+                    video.src = url;
+                    video.addEventListener('loadedmetadata', () => {
+                        video.play();
+                    });
+                }
+            }
+        }, 100);
+    };
+
+    // Cleanup HLS on unmount or clip change
+    useEffect(() => {
+        return () => {
+            if (hlsRef.current) {
+                hlsRef.current.destroy();
+            }
+        };
+    }, [selectedClip]);
+
+    const fetchM3u8Levels = async (url) => {
+        setLoadingM3u8(true);
+        try {
+            const response = await fetch(url);
+            const text = await response.text();
+            setRawM3u8(text);
+            const levels = parseM3u8(text);
+            setM3u8Levels(levels);
+        } catch (error) {
+            console.error('Error fetching M3U8:', error);
+        } finally {
+            setLoadingM3u8(false);
+        }
+    };
+
+    const parseM3u8 = (text) => {
+        const levels = [];
+        const lines = text.split('\n');
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+            if (line.startsWith('#EXT-X-STREAM-INF:')) {
+                const bandwidth = line.match(/BANDWIDTH=(\d+)/);
+                const resolution = line.match(/RESOLUTION=(\d+x\d+)/);
+                const nextLine = lines[i + 1]?.trim();
+
+                if (nextLine && !nextLine.startsWith('#')) {
+                    levels.push({
+                        bandwidth: bandwidth ? parseInt(bandwidth[1]) : null,
+                        resolution: resolution ? resolution[1] : null,
+                        url: nextLine,
+                    });
+                }
+            }
+        }
+
+        return levels;
     };
 
     return (
@@ -82,10 +173,10 @@ function App() {
                         </h1>
                     </div>
                     <button
-                        onClick={() => { setSelectedConfig(null); setSelectedClip(null); }}
+                        onClick={() => selectedClip ? setSelectedClip(null) : setSelectedConfig(null)}
                         className="text-sm text-white/60 hover:text-white transition"
                     >
-                        ← Back to List
+                        ← {selectedClip ? 'Back to Clips' : 'Back to Configs'}
                     </button>
                 </div>
             </header>
@@ -228,7 +319,24 @@ function App() {
 
                             {/* Video URL */}
                             <div>
-                                <h3 className="text-lg font-semibold mb-2">Stream URL</h3>
+                                <div className="flex items-center justify-between mb-2">
+                                    <h3 className="text-lg font-semibold">Stream URL</h3>
+                                    <div className="flex gap-2">
+                                        <button
+                                            onClick={() => setShowRaw(!showRaw)}
+                                            className="px-4 py-2 bg-blue-500 hover:bg-blue-600 rounded-lg font-medium transition"
+                                        >
+                                            {showRaw ? 'Hide' : 'RAW'}
+                                        </button>
+                                        <button
+                                            onClick={playVideo}
+                                            disabled={playing}
+                                            className="px-4 py-2 bg-green-500 hover:bg-green-600 rounded-lg font-medium transition flex items-center gap-2 disabled:opacity-50"
+                                        >
+                                            ▶ {playing ? 'Playing' : 'Play'}
+                                        </button>
+                                    </div>
+                                </div>
                                 <div className="bg-black/40 rounded-lg p-4 font-mono text-sm break-all">
                                     <a
                                         href={selectedClip.clip.strurl}
@@ -239,6 +347,54 @@ function App() {
                                         {selectedClip.clip.strurl}
                                     </a>
                                 </div>
+
+                                {/* Raw M3U8 Content */}
+                                {showRaw && rawM3u8 && (
+                                    <div className="mt-4">
+                                        <h4 className="text-sm font-semibold text-white/80 mb-2">Raw M3U8 File Content</h4>
+                                        <pre className="bg-black/60 rounded-lg p-4 overflow-auto max-h-96 text-xs text-green-300 font-mono">
+                                            {rawM3u8}
+                                        </pre>
+                                    </div>
+                                )}
+
+                                {/* Video Player */}
+                                {playing && (
+                                    <div className="mt-4">
+                                        <video
+                                            ref={videoRef}
+                                            controls
+                                            className="w-full max-w-4xl rounded-lg bg-black"
+                                            style={{ maxHeight: '600px' }}
+                                        />
+                                    </div>
+                                )}
+
+                                {/* Ladder Levels */}
+                                {loadingM3u8 && (
+                                    <p className="text-white/60 text-sm mt-3">Loading ladder levels...</p>
+                                )}
+                                {m3u8Levels.length > 0 && (
+                                    <div className="mt-4">
+                                        <h4 className="text-sm font-semibold text-white/80 mb-2">Ladder Levels ({m3u8Levels.length})</h4>
+                                        <div className="space-y-2">
+                                            {m3u8Levels.map((level, idx) => (
+                                                <div key={idx} className="bg-black/60 rounded-lg p-3 text-xs">
+                                                    <div className="flex justify-between items-center mb-1">
+                                                        <span className="text-white/80 font-medium">Level {idx + 1}</span>
+                                                        {level.resolution && (
+                                                            <span className="text-green-400">{level.resolution}</span>
+                                                        )}
+                                                    </div>
+                                                    {level.bandwidth && (
+                                                        <p className="text-white/60">Bandwidth: {(level.bandwidth / 1000000).toFixed(2)} Mbps</p>
+                                                    )}
+                                                    <p className="text-white/40 truncate mt-1">{level.url}</p>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
                             </div>
 
                             {/* Metadata */}
