@@ -175,6 +175,106 @@ function App() {
         return levels;
     };
 
+    const fetchRegistrationData = async (regData) => {
+        setLoadingReg(true);
+        try {
+            const [leftResponse, rightResponse] = await Promise.all([
+                fetch(regData.leftReg),
+                fetch(regData.rightReg)
+            ]);
+
+            const leftData = await leftResponse.json();
+            const rightData = await rightResponse.json();
+
+            // Analyze registration data
+            const analysis = {
+                left: {
+                    data: leftData,
+                    raw: JSON.stringify(leftData, null, 2),
+                    summary: analyzeRegistration(leftData, 'Left')
+                },
+                right: {
+                    data: rightData,
+                    raw: JSON.stringify(rightData, null, 2),
+                    summary: analyzeRegistration(rightData, 'Right')
+                },
+                comparison: compareRegistrations(leftData, rightData)
+            };
+
+            setRegistrationData(analysis);
+        } catch (error) {
+            console.error('Error fetching registration data:', error);
+        } finally {
+            setLoadingReg(false);
+        }
+    };
+
+    const analyzeRegistration = (data, side) => {
+        const summary = {
+            hasIntrinsics: !!data.intrinsics,
+            hasExtrinsics: !!data.extrinsics,
+            hasDistortion: !!data.distortion,
+            resolution: null,
+            focalLength: null,
+            principalPoint: null,
+        };
+
+        if (data.intrinsics) {
+            summary.focalLength = `fx: ${data.intrinsics.fx?.toFixed(2)}, fy: ${data.intrinsics.fy?.toFixed(2)}`;
+            summary.principalPoint = `cx: ${data.intrinsics.cx?.toFixed(2)}, cy: ${data.intrinsics.cy?.toFixed(2)}`;
+        }
+
+        if (data.resolution) {
+            summary.resolution = `${data.resolution.width}x${data.resolution.height}`;
+        }
+
+        return summary;
+    };
+
+    const compareRegistrations = (left, right) => {
+        const comparison = {
+            resolutionMatch: false,
+            focalLengthDiff: null,
+            notes: []
+        };
+
+        // Compare resolutions
+        if (left.resolution && right.resolution) {
+            comparison.resolutionMatch =
+                left.resolution.width === right.resolution.width &&
+                left.resolution.height === right.resolution.height;
+
+            if (comparison.resolutionMatch) {
+                comparison.notes.push('✓ Resolutions match');
+            } else {
+                comparison.notes.push('⚠ Different resolutions detected');
+            }
+        }
+
+        // Compare focal lengths
+        if (left.intrinsics?.fx && right.intrinsics?.fx) {
+            const diff = Math.abs(left.intrinsics.fx - right.intrinsics.fx);
+            comparison.focalLengthDiff = diff.toFixed(2);
+
+            if (diff < 1) {
+                comparison.notes.push('✓ Focal lengths are nearly identical');
+            } else {
+                comparison.notes.push(`⚠ Focal length difference: ${diff.toFixed(2)}px`);
+            }
+        }
+
+        // Check if both have distortion parameters
+        if (left.distortion && right.distortion) {
+            comparison.notes.push('✓ Both views have distortion correction');
+        } else if (!left.distortion && !right.distortion) {
+            comparison.notes.push('ℹ No distortion correction parameters');
+        } else {
+            comparison.notes.push('⚠ Only one view has distortion correction');
+        }
+
+        return comparison;
+    };
+
     const analyzeSummary = async () => {
         setLoadingSummary(true);
         setShowSummary(true);
