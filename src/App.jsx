@@ -217,6 +217,7 @@ function App() {
             resolution: null,
             focalLength: null,
             principalPoint: null,
+            worldPosition: null,
         };
 
         if (data.intrinsics) {
@@ -228,6 +229,10 @@ function App() {
             summary.resolution = `${data.resolution.width}x${data.resolution.height}`;
         }
 
+        if (data.world_position && Array.isArray(data.world_position)) {
+            summary.worldPosition = data.world_position;
+        }
+
         return summary;
     };
 
@@ -235,6 +240,7 @@ function App() {
         const comparison = {
             resolutionMatch: false,
             focalLengthDiff: null,
+            cameraDistance: null,
             notes: []
         };
 
@@ -261,6 +267,16 @@ function App() {
             } else {
                 comparison.notes.push(`⚠ Focal length difference: ${diff.toFixed(2)}px`);
             }
+        }
+
+        // Calculate distance between cameras
+        if (left.world_position && right.world_position) {
+            const dx = left.world_position[0] - right.world_position[0];
+            const dy = left.world_position[1] - right.world_position[1];
+            const dz = left.world_position[2] - right.world_position[2];
+            const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+            comparison.cameraDistance = distance.toFixed(3);
+            comparison.notes.push(`📏 Camera separation: ${distance.toFixed(3)} units`);
         }
 
         // Check if both have distortion parameters
@@ -751,6 +767,9 @@ function App() {
                                                     {registrationData.left.summary.principalPoint && (
                                                         <p className="text-xs"><span className="text-white/60">Principal Point:</span> {registrationData.left.summary.principalPoint}</p>
                                                     )}
+                                                    {registrationData.left.summary.worldPosition && (
+                                                        <p className="text-xs"><span className="text-white/60">World Position:</span> [{registrationData.left.summary.worldPosition.map(v => v.toFixed(2)).join(', ')}]</p>
+                                                    )}
                                                 </div>
 
                                                 {/* Right View */}
@@ -764,6 +783,9 @@ function App() {
                                                     )}
                                                     {registrationData.right.summary.principalPoint && (
                                                         <p className="text-xs"><span className="text-white/60">Principal Point:</span> {registrationData.right.summary.principalPoint}</p>
+                                                    )}
+                                                    {registrationData.right.summary.worldPosition && (
+                                                        <p className="text-xs"><span className="text-white/60">World Position:</span> [{registrationData.right.summary.worldPosition.map(v => v.toFixed(2)).join(', ')}]</p>
                                                     )}
                                                 </div>
                                             </div>
