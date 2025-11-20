@@ -471,6 +471,36 @@ function App() {
                                     <div className="mt-4 bg-black/40 rounded-lg p-4 space-y-3">
                                         <h4 className="text-sm font-semibold text-white mb-2">Stream Analysis</h4>
                                         <div className="grid grid-cols-2 gap-4 text-sm">
+                                            {summary.totalDuration && (
+                                                <div>
+                                                    <span className="text-white/60">Total Duration:</span>
+                                                    <p className="text-white font-medium">{Math.floor(summary.totalDuration / 60)}m {summary.totalDuration % 60}s</p>
+                                                </div>
+                                            )}
+                                            {summary.targetDuration && (
+                                                <div>
+                                                    <span className="text-white/60">Max Segment Size:</span>
+                                                    <p className="text-white font-medium">{summary.targetDuration}s</p>
+                                                </div>
+                                            )}
+                                            {summary.segments.length > 0 && (
+                                                <div>
+                                                    <span className="text-white/60">Segments:</span>
+                                                    <p className="text-white font-medium">{summary.segments.length}</p>
+                                                </div>
+                                            )}
+                                            {summary.startTime && (
+                                                <div>
+                                                    <span className="text-white/60">Start Time:</span>
+                                                    <p className="text-white font-medium text-xs">{new Date(summary.startTime).toLocaleString()}</p>
+                                                </div>
+                                            )}
+                                            {summary.endTime && (
+                                                <div>
+                                                    <span className="text-white/60">End Time:</span>
+                                                    <p className="text-white font-medium text-xs">{new Date(summary.endTime).toLocaleString()}</p>
+                                                </div>
+                                            )}
                                             <div>
                                                 <span className="text-white/60">Playlist Type:</span>
                                                 <p className="text-white font-medium">{summary.playlistType}</p>
@@ -487,24 +517,6 @@ function App() {
                                                     <p className="text-white font-medium">{summary.variants}</p>
                                                 </div>
                                             )}
-                                            {summary.targetDuration && (
-                                                <div>
-                                                    <span className="text-white/60">Target Segment Duration:</span>
-                                                    <p className="text-white font-medium">{summary.targetDuration}s</p>
-                                                </div>
-                                            )}
-                                            {summary.totalDuration && (
-                                                <div>
-                                                    <span className="text-white/60">Total Duration:</span>
-                                                    <p className="text-white font-medium">{Math.floor(summary.totalDuration / 60)}m {summary.totalDuration % 60}s</p>
-                                                </div>
-                                            )}
-                                            {summary.segments.length > 0 && (
-                                                <div>
-                                                    <span className="text-white/60">Segments:</span>
-                                                    <p className="text-white font-medium">{summary.segments.length}</p>
-                                                </div>
-                                            )}
                                         </div>
 
                                         {summary.codecs.length > 0 && (
@@ -516,20 +528,6 @@ function App() {
                                                             {codec}
                                                         </span>
                                                     ))}
-                                                </div>
-                                            </div>
-                                        )}
-
-                                        {(summary.startTime || summary.endTime) && (
-                                            <div className="border-t border-white/10 pt-3 mt-3">
-                                                <h5 className="text-xs font-semibold text-white/80 mb-2">Stream Timeline</h5>
-                                                <div className="text-xs space-y-1">
-                                                    {summary.startTime && (
-                                                        <p><span className="text-white/60">Start:</span> {new Date(summary.startTime).toLocaleString()}</p>
-                                                    )}
-                                                    {summary.endTime && (
-                                                        <p><span className="text-white/60">End:</span> {new Date(summary.endTime).toLocaleString()}</p>
-                                                    )}
                                                 </div>
                                             </div>
                                         )}
