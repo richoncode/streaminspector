@@ -14,6 +14,9 @@ function App() {
     const [playing, setPlaying] = useState(false);
     const [showRaw, setShowRaw] = useState(false);
     const [rawM3u8, setRawM3u8] = useState('');
+    const [showSummary, setShowSummary] = useState(false);
+    const [summary, setSummary] = useState(null);
+    const [loadingSummary, setLoadingSummary] = useState(false);
     const videoRef = useRef(null);
     const hlsRef = useRef(null);
 
@@ -81,6 +84,8 @@ function App() {
         setPlaying(false);
         setShowRaw(false);
         setRawM3u8('');
+        setShowSummary(false);
+        setSummary(null);
         if (clip.strurl) {
             fetchM3u8Levels(clip.strurl);
         }
@@ -160,6 +165,112 @@ function App() {
         }
 
         return levels;
+    };
+
+    const analyzeSummary = async () => {
+        setLoadingSummary(true);
+        setShowSummary(true);
+
+        try {
+            const analysis = {
+                playlistType: 'Unknown',
+                variants: m3u8Levels.length,
+                targetDuration: null,
+                playlistVersion: null,
+                codecs: [],
+                segments: [],
+                segmentInfo: null,
+                totalDuration: null,
+                startTime: null,
+                endTime: null,
+            };
+
+            // Get timestamps from clip metadata
+            if (selectedClip?.clip.timeSegments && selectedClip.clip.timeSegments.length > 0) {
+                const timeSegment = selectedClip.clip.timeSegments[0];
+                analysis.startTime = timeSegment.startWallTime;
+                analysis.endTime = timeSegment.endWallTime;
+
+                // Calculate total duration from timestamps
+                if (timeSegment.startWallTime && timeSegment.endWallTime) {
+                    const start = new Date(timeSegment.startWallTime);
+                    const end = new Date(timeSegment.endWallTime);
+                    const durationMs = end - start;
+                    analysis.totalDuration = Math.floor(durationMs / 1000); // in seconds
+                }
+            }
+
+            // Parse M3U8 for metadata
+            const lines = rawM3u8.split('\n');
+            for (const line of lines) {
+                if (line.startsWith('#EXT-X-VERSION:')) {
+                    analysis.playlistVersion = line.split(':')[1];
+                }
+                if (line.startsWith('#EXT-X-TARGETDURATION:')) {
+                    analysis.targetDuration = parseInt(line.split(':')[1]);
+                }
+                if (line.includes('CODECS=')) {
+                    const codecMatch = line.match(/CODECS="([^"]+)"/);
+                    if (codecMatch && !analysis.codecs.includes(codecMatch[1])) {
+                        analysis.codecs.push(codecMatch[1]);
+                    }
+                }
+                if (line.startsWith('#EXTINF:')) {
+                    analysis.segments.push(line);
+                }
+            }
+
+            // Determine playlist type
+            if (m3u8Levels.length > 0) {
+                analysis.playlistType = 'Master Playlist (Adaptive)';
+            } else if (analysis.segments.length > 0) {
+                analysis.playlistType = 'Media Playlist';
+            }
+
+            // Try to fetch first segment for detailed info
+            if (m3u8Levels.length > 0 && m3u8Levels[0].url) {
+                try {
+                    const baseUrl = selectedClip.clip.strurl.substring(0, selectedClip.clip.strurl.lastIndexOf('/'));
+                    const variantUrl = m3u8Levels[0].url.startsWith('http')
+                        ? m3u8Levels[0].url
+                        : `${baseUrl}/${m3u8Levels[0].url}`;
+
+                    const variantResponse = await fetch(variantUrl);
+                    const variantText = await variantResponse.text();
+                    const variantLines = variantText.split('\n');
+
+                    let segmentUrl = null;
+                    for (let i = 0; i < variantLines.length; i++) {
+                        if (variantLines[i].startsWith('#EXTINF:')) {
+                            const nextLine = variantLines[i + 1]?.trim();
+                            if (nextLine && !nextLine.startsWith('#')) {
+                                segmentUrl = nextLine.startsWith('http')
+                                    ? nextLine
+                                    : `${baseUrl}/${nextLine}`;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (segmentUrl) {
+                        const segmentResponse = await fetch(segmentUrl, { method: 'HEAD' });
+                        analysis.segmentInfo = {
+                            url: segmentUrl,
+                            size: segmentResponse.headers.get('content-length'),
+                            type: segmentResponse.headers.get('content-type'),
+                        };
+                    }
+                } catch (err) {
+                    console.error('Error fetching segment info:', err);
+                }
+            }
+
+            setSummary(analysis);
+        } catch (error) {
+            console.error('Error analyzing summary:', error);
+        } finally {
+            setLoadingSummary(false);
+        }
     };
 
     return (
@@ -323,6 +434,13 @@ function App() {
                                     <h3 className="text-lg font-semibold">Stream URL</h3>
                                     <div className="flex gap-2">
                                         <button
+                                            onClick={analyzeSummary}
+                                            disabled={loadingSummary}
+                                            className="px-4 py-2 bg-purple-500 hover:bg-purple-600 rounded-lg font-medium transition disabled:opacity-50"
+                                        >
+                                            {loadingSummary ? 'Analyzing...' : 'Summary'}
+                                        </button>
+                                        <button
                                             onClick={() => setShowRaw(!showRaw)}
                                             className="px-4 py-2 bg-blue-500 hover:bg-blue-600 rounded-lg font-medium transition"
                                         >
@@ -347,6 +465,89 @@ function App() {
                                         {selectedClip.clip.strurl}
                                     </a>
                                 </div>
+
+                                {/* Summary Analysis */}
+                                {showSummary && summary && (
+                                    <div className="mt-4 bg-black/40 rounded-lg p-4 space-y-3">
+                                        <h4 className="text-sm font-semibold text-white mb-2">Stream Analysis</h4>
+                                        <div className="grid grid-cols-2 gap-4 text-sm">
+                                            <div>
+                                                <span className="text-white/60">Playlist Type:</span>
+                                                <p className="text-white font-medium">{summary.playlistType}</p>
+                                            </div>
+                                            {summary.playlistVersion && (
+                                                <div>
+                                                    <span className="text-white/60">HLS Version:</span>
+                                                    <p className="text-white font-medium">{summary.playlistVersion}</p>
+                                                </div>
+                                            )}
+                                            {summary.variants > 0 && (
+                                                <div>
+                                                    <span className="text-white/60">Variants:</span>
+                                                    <p className="text-white font-medium">{summary.variants}</p>
+                                                </div>
+                                            )}
+                                            {summary.targetDuration && (
+                                                <div>
+                                                    <span className="text-white/60">Target Segment Duration:</span>
+                                                    <p className="text-white font-medium">{summary.targetDuration}s</p>
+                                                </div>
+                                            )}
+                                            {summary.totalDuration && (
+                                                <div>
+                                                    <span className="text-white/60">Total Duration:</span>
+                                                    <p className="text-white font-medium">{Math.floor(summary.totalDuration / 60)}m {summary.totalDuration % 60}s</p>
+                                                </div>
+                                            )}
+                                            {summary.segments.length > 0 && (
+                                                <div>
+                                                    <span className="text-white/60">Segments:</span>
+                                                    <p className="text-white font-medium">{summary.segments.length}</p>
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        {summary.codecs.length > 0 && (
+                                            <div>
+                                                <span className="text-white/60 text-sm">Codecs:</span>
+                                                <div className="flex flex-wrap gap-2 mt-1">
+                                                    {summary.codecs.map((codec, idx) => (
+                                                        <span key={idx} className="px-2 py-1 bg-blue-500/20 text-blue-300 rounded text-xs font-mono">
+                                                            {codec}
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {(summary.startTime || summary.endTime) && (
+                                            <div className="border-t border-white/10 pt-3 mt-3">
+                                                <h5 className="text-xs font-semibold text-white/80 mb-2">Stream Timeline</h5>
+                                                <div className="text-xs space-y-1">
+                                                    {summary.startTime && (
+                                                        <p><span className="text-white/60">Start:</span> {new Date(summary.startTime).toLocaleString()}</p>
+                                                    )}
+                                                    {summary.endTime && (
+                                                        <p><span className="text-white/60">End:</span> {new Date(summary.endTime).toLocaleString()}</p>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {summary.segmentInfo && (
+                                            <div className="border-t border-white/10 pt-3 mt-3">
+                                                <h5 className="text-xs font-semibold text-white/80 mb-2">Sample Segment Info</h5>
+                                                <div className="text-xs space-y-1">
+                                                    <p><span className="text-white/60">Type:</span> {summary.segmentInfo.type || 'Unknown'}</p>
+                                                    {summary.segmentInfo.size && (
+                                                        <p><span className="text-white/60">Size:</span> {(summary.segmentInfo.size / 1024 / 1024).toFixed(2)} MB</p>
+                                                    )}
+                                                    <p className="text-white/40 truncate"><span className="text-white/60">URL:</span> {summary.segmentInfo.url}</p>
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
 
                                 {/* Raw M3U8 Content */}
                                 {showRaw && rawM3u8 && (
