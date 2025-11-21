@@ -3,6 +3,8 @@ import { loadConfigs, saveConfigs } from './data/sampleConfigs';
 import Hls from 'hls.js';
 import './index.css';
 
+const APP_VERSION = 'v1.0.1-rev5';
+
 function App() {
     const [configs, setConfigs] = useState([]);
     const [selectedConfig, setSelectedConfig] = useState(null);
@@ -20,12 +22,26 @@ function App() {
     const [registrationData, setRegistrationData] = useState(null);
     const [showRawReg, setShowRawReg] = useState(false);
     const [loadingReg, setLoadingReg] = useState(false);
+    const [firstFrame, setFirstFrame] = useState(null);
+    const [loadingFirstFrame, setLoadingFirstFrame] = useState(false);
     const videoRef = useRef(null);
     const hlsRef = useRef(null);
+    const leftRegScrollRef = useRef(null);
+    const rightRegScrollRef = useRef(null);
+    const frameExtractorVideoRef = useRef(null);
+    const frameExtractorCanvasRef = useRef(null);
 
     useEffect(() => {
         setConfigs(loadConfigs());
     }, []);
+
+    useEffect(() => {
+        if (selectedClip?.clip?.strurl) {
+            extractFirstFrame(selectedClip.clip.strurl);
+        } else {
+            setFirstFrame(null);
+        }
+    }, [selectedClip]);
 
     const fetchConfig = async (config) => {
         setLoading(true);
@@ -218,6 +234,11 @@ function App() {
             focalLength: null,
             principalPoint: null,
             worldPosition: null,
+            worldViewDirection: null,
+            misc: null,
+            xyDistance: null,
+            verticalTilt: null,
+            groundPlanePoint: null,
         };
 
         if (data.intrinsics) {
@@ -231,6 +252,37 @@ function App() {
 
         if (data.world_position && Array.isArray(data.world_position)) {
             summary.worldPosition = data.world_position;
+            const [x, y, z] = data.world_position;
+
+            // Calculate XY distance to origin (0,0,0)
+            summary.xyDistance = Math.sqrt(x * x + y * y);
+        }
+
+        if (data.world_view_direction && Array.isArray(data.world_view_direction)) {
+            summary.worldViewDirection = data.world_view_direction;
+            const [vx, vy, vz] = data.world_view_direction;
+
+            // Calculate vertical tilt (down angle from horizontal)
+            const horizontalMag = Math.sqrt(vx * vx + vy * vy);
+            // Negative vz means looking down (z-up coordinate system)
+            summary.verticalTilt = Math.atan2(-vz, horizontalMag) * (180 / Math.PI);
+
+            // Calculate where camera is looking at on z=0 plane
+            if (data.world_position && vz !== 0) {
+                const [x, y, z] = data.world_position;
+                // Ray: P(t) = position + t * direction
+                // For z=0: z + t*vz = 0, so t = -z/vz
+                const t = -z / vz;
+                summary.groundPlanePoint = [
+                    x + t * vx,
+                    y + t * vy,
+                    0
+                ];
+            }
+        }
+
+        if (data.misc) {
+            summary.misc = data.misc;
         }
 
         return summary;
@@ -241,6 +293,7 @@ function App() {
             resolutionMatch: false,
             focalLengthDiff: null,
             cameraDistance: null,
+            viewDirectionAngle: null,
             notes: []
         };
 
@@ -277,6 +330,33 @@ function App() {
             const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
             comparison.cameraDistance = distance.toFixed(3);
             comparison.notes.push(`📏 Camera separation: ${distance.toFixed(3)} units`);
+        }
+
+        // Calculate vergence angle between view directions
+        if (left.world_view_direction && right.world_view_direction) {
+            const leftVec = left.world_view_direction;
+            const rightVec = right.world_view_direction;
+
+            // Dot product
+            const dotProduct = leftVec[0] * rightVec[0] + leftVec[1] * rightVec[1] + leftVec[2] * rightVec[2];
+
+            // Magnitudes
+            const leftMag = Math.sqrt(leftVec[0] ** 2 + leftVec[1] ** 2 + leftVec[2] ** 2);
+            const rightMag = Math.sqrt(rightVec[0] ** 2 + rightVec[1] ** 2 + rightVec[2] ** 2);
+
+            // Angle in radians, then convert to degrees
+            const cosAngle = dotProduct / (leftMag * rightMag);
+            const angleRad = Math.acos(Math.max(-1, Math.min(1, cosAngle))); // Clamp to [-1, 1]
+            const angleDeg = angleRad * (180 / Math.PI);
+
+            // Check if parallel (very small angle)
+            if (angleDeg < 0.01) {
+                comparison.viewDirectionAngle = 'parallel';
+                comparison.notes.push('📐 Vergence: parallel');
+            } else {
+                comparison.viewDirectionAngle = angleDeg.toFixed(2);
+                comparison.notes.push(`📐 Vergence: ${angleDeg.toFixed(2)}°`);
+            }
         }
 
         // Check if both have distortion parameters
@@ -397,15 +477,271 @@ function App() {
         }
     };
 
+    const handleRegScrollSync = (sourceRef, targetRef) => (e) => {
+        if (targetRef.current && sourceRef.current) {
+            // Sync scroll position from source to target
+            targetRef.current.scrollTop = sourceRef.current.scrollTop;
+            targetRef.current.scrollLeft = sourceRef.current.scrollLeft;
+        }
+    };
+
+    const [firstFrameError, setFirstFrameError] = useState(null);
+
+    const extractFirstFrame = async (m3u8Url, attempt = 0) => {
+        console.log(`extractFirstFrame called with: ${m3u8Url}, attempt: ${attempt}`);
+        if (attempt === 0) {
+            setLoadingFirstFrame(true);
+            setFirstFrame(null);
+            setFirstFrameError(null);
+        }
+
+        const video = frameExtractorVideoRef.current;
+        const canvas = frameExtractorCanvasRef.current;
+
+        console.log('Refs:', { video: !!video, canvas: !!canvas });
+
+        if (!video || !canvas) {
+            console.error('Video or canvas ref is null');
+            if (attempt < 3) {
+                console.log('Retrying extraction in 100ms...');
+                setTimeout(() => extractFirstFrame(m3u8Url, attempt + 1), 100);
+                return;
+            }
+            setFirstFrameError('Internal Error: Video/Canvas ref null');
+            setLoadingFirstFrame(false);
+            return;
+        }
+
+        let hls = null;
+
+        const captureFrame = async () => {
+            // Wait for seek to complete
+            await new Promise((resolve) => {
+                if (video.seeking) {
+                    video.addEventListener('seeked', () => resolve(), { once: true });
+                } else {
+                    resolve();
+                }
+            });
+
+            // Small delay to ensure rendering
+            await new Promise(r => requestAnimationFrame(r));
+
+            console.log('Video dimensions:', video.videoWidth, video.videoHeight);
+
+            if (video.videoWidth === 0 || video.videoHeight === 0) {
+                throw new Error('Video dimensions are 0');
+            }
+
+            // Draw frame
+            canvas.width = video.videoWidth || 640;
+            canvas.height = video.videoHeight || 360;
+            const ctx = canvas.getContext('2d', { alpha: true });
+
+            // Clear canvas with transparency
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            // Apply mask if available
+            if (selectedClip?.clip?.maskUrl) {
+                try {
+                    const maskImg = new Image();
+                    maskImg.crossOrigin = "anonymous";
+                    await new Promise((resolve, reject) => {
+                        maskImg.onload = resolve;
+                        maskImg.onerror = reject;
+                        maskImg.src = selectedClip.clip.maskUrl;
+                    });
+
+                    // Mask is Side-by-Side (Left | Right)
+                    // Video is Top-Bottom (Top=Left, Bottom=Right)
+
+                    const vw = canvas.width;
+                    const vh = canvas.height;
+                    const eyeHeight = vh / 2;
+                    const eyeWidth = vw;
+
+                    const mw = maskImg.width;
+                    const mh = maskImg.height;
+                    const maskEyeWidth = mw / 2;
+
+                    // Store the original video frame
+                    const videoFrame = ctx.getImageData(0, 0, vw, vh);
+
+                    // Clear the main canvas
+                    ctx.clearRect(0, 0, vw, vh);
+
+                    // Process each eye separately
+                    for (let eye = 0; eye < 2; eye++) {
+                        // Create temporary canvas for this eye
+                        const eyeCanvas = document.createElement('canvas');
+                        eyeCanvas.width = eyeWidth;
+                        eyeCanvas.height = eyeHeight;
+                        const eyeCtx = eyeCanvas.getContext('2d', { alpha: true });
+
+                        // --- draw mask for this eye ---
+                        eyeCtx.globalCompositeOperation = "source-over";
+                        eyeCtx.drawImage(
+                            maskImg,
+                            eye * maskEyeWidth, 0,           // src x,y (left or right half)
+                            maskEyeWidth, mh,                // src w,h
+                            0, 0,
+                            eyeWidth, eyeHeight              // dst w,h
+                        );
+
+                        // convert mask luminance into alpha
+                        const imgData = eyeCtx.getImageData(0, 0, eyeWidth, eyeHeight);
+                        const data = imgData.data;
+                        for (let i = 0; i < data.length; i += 4) {
+                            const r = data[i];               // grayscale mask → use red channel
+                            data[i + 3] = r;                 // alpha = mask
+                            data[i] = data[i + 1] = data[i + 2] = 255;  // (RGB doesn't matter)
+                        }
+                        eyeCtx.putImageData(imgData, 0, 0);
+
+                        // --- use mask to cut video for this eye ---
+                        eyeCtx.globalCompositeOperation = "source-in";
+                        const videoSrcY = eye * eyeHeight; // top (0) or bottom (eyeHeight)
+
+                        // Create a temporary canvas from the stored video frame
+                        const tempCanvas = document.createElement('canvas');
+                        tempCanvas.width = vw;
+                        tempCanvas.height = vh;
+                        const tempCtx = tempCanvas.getContext('2d', { alpha: true });
+                        tempCtx.putImageData(videoFrame, 0, 0);
+
+                        eyeCtx.drawImage(
+                            tempCanvas,
+                            0, videoSrcY, vw, eyeHeight,     // src rect in TB video
+                            0, 0, eyeWidth, eyeHeight        // dst
+                        );
+
+                        // Draw the masked eye back to main canvas
+                        const destY = eye * eyeHeight;
+                        ctx.drawImage(eyeCanvas, 0, destY);
+                    }
+
+                } catch (e) {
+                    console.error('Error applying mask:', e);
+                    // Continue without mask if it fails
+                }
+            }
+
+            try {
+                const frameDataUrl = canvas.toDataURL('image/png');
+                console.log('Frame extracted, length:', frameDataUrl.length);
+                setFirstFrame(frameDataUrl);
+            } catch (e) {
+                console.error('Canvas toDataURL error:', e);
+                throw new Error(`Canvas Security Error: ${e.message}`);
+            }
+        };
+
+        try {
+            if (Hls.isSupported()) {
+                console.log('Hls is supported');
+                hls = new Hls({
+                    enableWorker: false,
+                    startLevel: 0,
+                    autoStartLoad: true,
+                    capLevelToPlayerSize: true
+                });
+
+                hls.loadSource(m3u8Url);
+                hls.attachMedia(video);
+
+                await new Promise((resolve, reject) => {
+                    const onManifestParsed = () => {
+                        console.log('Manifest parsed');
+                        video.muted = true;
+                        // We don't need to play, just load enough to seek
+                        video.currentTime = 0.1; // Seek slightly into the video
+                    };
+
+                    const onError = (event, data) => {
+                        console.log('HLS Error event:', data.type, data.details);
+                        if (data.fatal) {
+                            reject(new Error(`HLS Error: ${data.type} - ${data.details}`));
+                        }
+                    };
+
+                    const onSeeked = () => {
+                        console.log('HLS: seeked event');
+                        resolve();
+                    }
+
+                    hls.on(Hls.Events.MANIFEST_PARSED, onManifestParsed);
+                    hls.on(Hls.Events.ERROR, onError);
+                    video.addEventListener('seeked', onSeeked, { once: true });
+
+                    const timeout = setTimeout(() => {
+                        console.error('Timeout waiting for video data');
+                        cleanup();
+                        reject(new Error('Timeout waiting for video data (10s)'));
+                    }, 10000);
+
+                    const cleanup = () => {
+                        clearTimeout(timeout);
+                        hls.off(Hls.Events.MANIFEST_PARSED, onManifestParsed);
+                        hls.off(Hls.Events.ERROR, onError);
+                        video.removeEventListener('seeked', onSeeked);
+                    };
+                });
+
+                await captureFrame();
+
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                console.log('Using native HLS');
+                // Native HLS (Safari)
+                video.src = m3u8Url;
+                video.muted = true;
+                video.currentTime = 0.1;
+
+                await new Promise((resolve, reject) => {
+                    const onSeeked = () => {
+                        console.log('Native: seeked');
+                        resolve();
+                    };
+                    const onError = () => reject(new Error('Video error'));
+
+                    video.addEventListener('seeked', onSeeked, { once: true });
+                    video.addEventListener('error', onError, { once: true });
+
+                    // Add timeout for native HLS as well
+                    setTimeout(() => reject(new Error('Timeout waiting for native video data')), 10000);
+                });
+
+                await captureFrame();
+            } else {
+                throw new Error('HLS not supported');
+            }
+        } catch (error) {
+            console.error('Error extracting first frame:', error);
+            setFirstFrameError(error.message);
+        } finally {
+            if (hls) {
+                hls.destroy();
+            }
+            video.removeAttribute('src');
+            video.load();
+            setLoadingFirstFrame(false);
+            console.log('extractFirstFrame finished');
+        }
+    };
+
     return (
         <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 text-white">
             <header className="bg-black/20 backdrop-blur-sm border-b border-white/10 p-4">
                 <div className="max-w-7xl mx-auto flex items-center justify-between">
                     <div className="flex items-center space-x-3">
                         <span className="text-3xl">🎬</span>
-                        <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
-                            StreamInspector
-                        </h1>
+                        <div className="flex items-baseline gap-2">
+                            <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
+                                StreamInspector
+                            </h1>
+                            <span className="text-xs text-white/30 font-mono">{APP_VERSION}</span>
+                        </div>
                     </div>
                     <button
                         onClick={() => selectedClip ? setSelectedClip(null) : setSelectedConfig(null)}
@@ -531,12 +867,41 @@ function App() {
                             {/* Thumbnail */}
                             {selectedClip.clip.thumbnailUrl && (
                                 <div>
-                                    <h3 className="text-lg font-semibold mb-2">Thumbnail</h3>
-                                    <img
-                                        src={selectedClip.clip.thumbnailUrl}
-                                        alt="Thumbnail"
-                                        className="w-full max-w-md rounded-lg border border-white/20"
-                                    />
+                                    <h3 className="text-lg font-semibold mb-2">Thumbnail & First Frame</h3>
+                                    <div className="flex gap-4">
+                                        <div>
+                                            <p className="text-sm text-white/60 mb-1">Thumbnail</p>
+                                            <img
+                                                src={selectedClip.clip.thumbnailUrl}
+                                                alt="Thumbnail"
+                                                className="w-full max-w-md rounded-lg border border-white/20"
+                                            />
+                                        </div>
+                                        <div>
+                                            <p className="text-sm text-white/60 mb-1">First Frame</p>
+                                            {loadingFirstFrame ? (
+                                                <div className="w-full max-w-md aspect-video rounded-lg border border-white/20 bg-black/40 flex items-center justify-center">
+                                                    <div className="text-gray-400 italic">Extracting frame...</div>
+                                                </div>
+                                            ) : firstFrame ? (
+                                                <img
+                                                    src={firstFrame}
+                                                    alt="First Frame"
+                                                    className="w-full max-w-md rounded-lg border border-white/20"
+                                                />
+                                            ) : (
+                                                <div className="w-full max-w-md aspect-video rounded-lg border border-white/20 bg-black/40 flex items-center justify-center">
+                                                    <div className="text-gray-500 italic">
+                                                        {firstFrameError ? (
+                                                            <span className="text-red-400">Error: {firstFrameError}</span>
+                                                        ) : (
+                                                            "No frame available"
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
                                 </div>
                             )}
 
@@ -555,7 +920,7 @@ function App() {
                             {/* Video URL */}
                             <div>
                                 <div className="flex items-center justify-between mb-2">
-                                    <h3 className="text-lg font-semibold">Stream URL</h3>
+                                    <h3 className="text-lg font-semibold">Video URL</h3>
                                     <div className="flex gap-2">
                                         <button
                                             onClick={analyzeSummary}
@@ -722,7 +1087,7 @@ function App() {
 
                             {/* Metadata */}
                             <div>
-                                <h3 className="text-lg font-semibold mb-2">Metadata</h3>
+                                <h3 className="text-lg font-semibold mb-2">Video Metadata</h3>
                                 <div className="bg-black/40 rounded-lg p-4 space-y-1 text-sm">
                                     <p><span className="text-white/60">Clip ID:</span> {selectedClip.clip.id}</p>
                                     <p><span className="text-white/60">Game ID:</span> {selectedClip.clip.gid}</p>
@@ -770,6 +1135,18 @@ function App() {
                                                     {registrationData.left.summary.worldPosition && (
                                                         <p className="text-xs"><span className="text-white/60">World Position:</span> [{registrationData.left.summary.worldPosition.map(v => v.toFixed(2)).join(', ')}]</p>
                                                     )}
+                                                    {registrationData.left.summary.worldViewDirection && (
+                                                        <p className="text-xs"><span className="text-white/60">View Direction:</span> [{registrationData.left.summary.worldViewDirection.map(v => v.toFixed(4)).join(', ')}]</p>
+                                                    )}
+                                                    {registrationData.left.summary.xyDistance !== null && (
+                                                        <p className="text-xs"><span className="text-white/60">XY Distance:</span> {registrationData.left.summary.xyDistance.toFixed(3)} units</p>
+                                                    )}
+                                                    {registrationData.left.summary.verticalTilt !== null && (
+                                                        <p className="text-xs"><span className="text-white/60">Vertical Tilt:</span> {registrationData.left.summary.verticalTilt.toFixed(2)}° down</p>
+                                                    )}
+                                                    {registrationData.left.summary.groundPlanePoint && (
+                                                        <p className="text-xs"><span className="text-white/60">Ground Point (z=0):</span> [{registrationData.left.summary.groundPlanePoint.map(v => v.toFixed(2)).join(', ')}]</p>
+                                                    )}
                                                 </div>
 
                                                 {/* Right View */}
@@ -787,6 +1164,18 @@ function App() {
                                                     {registrationData.right.summary.worldPosition && (
                                                         <p className="text-xs"><span className="text-white/60">World Position:</span> [{registrationData.right.summary.worldPosition.map(v => v.toFixed(2)).join(', ')}]</p>
                                                     )}
+                                                    {registrationData.right.summary.worldViewDirection && (
+                                                        <p className="text-xs"><span className="text-white/60">View Direction:</span> [{registrationData.right.summary.worldViewDirection.map(v => v.toFixed(4)).join(', ')}]</p>
+                                                    )}
+                                                    {registrationData.right.summary.xyDistance !== null && (
+                                                        <p className="text-xs"><span className="text-white/60">XY Distance:</span> {registrationData.right.summary.xyDistance.toFixed(3)} units</p>
+                                                    )}
+                                                    {registrationData.right.summary.verticalTilt !== null && (
+                                                        <p className="text-xs"><span className="text-white/60">Vertical Tilt:</span> {registrationData.right.summary.verticalTilt.toFixed(2)}° down</p>
+                                                    )}
+                                                    {registrationData.right.summary.groundPlanePoint && (
+                                                        <p className="text-xs"><span className="text-white/60">Ground Point (z=0):</span> [{registrationData.right.summary.groundPlanePoint.map(v => v.toFixed(2)).join(', ')}]</p>
+                                                    )}
                                                 </div>
                                             </div>
 
@@ -801,6 +1190,27 @@ function App() {
                                                     </div>
                                                 </div>
                                             )}
+
+                                            {/* Misc Messages */}
+                                            {(registrationData.left.summary.misc || registrationData.right.summary.misc) && (
+                                                <div className="border-t border-white/10 pt-3">
+                                                    <h5 className="text-xs font-semibold text-white/80 mb-2">Camera Info</h5>
+                                                    <div className="space-y-2">
+                                                        {registrationData.left.summary.misc && (
+                                                            <div className="bg-blue-500/10 rounded p-2 border border-blue-500/20">
+                                                                <p className="text-xs text-blue-300 font-medium mb-1">Left:</p>
+                                                                <p className="text-xs text-white/80">{registrationData.left.summary.misc}</p>
+                                                            </div>
+                                                        )}
+                                                        {registrationData.right.summary.misc && (
+                                                            <div className="bg-green-500/10 rounded p-2 border border-green-500/20">
+                                                                <p className="text-xs text-green-300 font-medium mb-1">Right:</p>
+                                                                <p className="text-xs text-white/80">{registrationData.right.summary.misc}</p>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            )}
                                         </div>
                                     )}
 
@@ -808,13 +1218,21 @@ function App() {
                                         <div className="space-y-3">
                                             <div>
                                                 <h4 className="text-sm font-semibold text-white/80 mb-2">Left Registration (Raw JSON)</h4>
-                                                <pre className="bg-black/60 rounded-lg p-4 overflow-auto max-h-96 text-xs text-green-300 font-mono">
+                                                <pre
+                                                    ref={leftRegScrollRef}
+                                                    onScroll={handleRegScrollSync(leftRegScrollRef, rightRegScrollRef)}
+                                                    className="bg-black/60 rounded-lg p-4 overflow-auto max-h-96 text-xs text-green-300 font-mono"
+                                                >
                                                     {registrationData.left.raw}
                                                 </pre>
                                             </div>
                                             <div>
                                                 <h4 className="text-sm font-semibold text-white/80 mb-2">Right Registration (Raw JSON)</h4>
-                                                <pre className="bg-black/60 rounded-lg p-4 overflow-auto max-h-96 text-xs text-green-300 font-mono">
+                                                <pre
+                                                    ref={rightRegScrollRef}
+                                                    onScroll={handleRegScrollSync(rightRegScrollRef, leftRegScrollRef)}
+                                                    className="bg-black/60 rounded-lg p-4 overflow-auto max-h-96 text-xs text-green-300 font-mono"
+                                                >
                                                     {registrationData.right.raw}
                                                 </pre>
                                             </div>
@@ -834,6 +1252,18 @@ function App() {
                     </div>
                 )}
             </main>
+
+            {/* Hidden elements for first frame extraction */}
+            <video
+                ref={frameExtractorVideoRef}
+                crossOrigin="anonymous"
+                playsInline
+                style={{ position: 'absolute', top: -9999, left: -9999, opacity: 0, pointerEvents: 'none' }}
+            />
+            <canvas
+                ref={frameExtractorCanvasRef}
+                style={{ position: 'absolute', top: -9999, left: -9999, opacity: 0, pointerEvents: 'none' }}
+            />
         </div>
     );
 }
